@@ -1,0 +1,137 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: audit-postgres
+    environment:
+      POSTGRES_USER: audit
+      POSTGRES_PASSWORD: audit
+      POSTGRES_DB: audit
+    ports:
+      - "5435:5432"
+    volumes:
+      - audit_postgres_data:/var/lib/postgresql/data
+
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: audit-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+
+      # 9092 — подключение Go-приложения с Mac.
+      # 29092 — подключение контейнеров внутри Docker.
+      # 9093 — KRaft controller.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+  kafka-init:
+    image: apache/kafka:4.3.1
+    container_name: kafka-init
+    depends_on:
+      - kafka
+
+    entrypoint: ["/bin/sh", "-c"]
+
+    command:
+      - |
+        until /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:29092 \
+          --list >/dev/null 2>&1; do
+          echo "Waiting for Kafka..."
+          sleep 2
+        done
+
+        if ! /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:29092 \
+          --list | grep -q "^user-actions$$"; then
+
+          echo "Creating user-actions with 3 partitions"
+
+          if ! /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server kafka:29092 \
+            --create \
+            --topic user-actions \
+            --partitions 3 \
+            --replication-factor 1; then
+
+            echo "ERROR: failed to create user-actions"
+            exit 1
+          fi
+
+        else
+          PARTITIONS=$$(/opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server kafka:29092 \
+            --describe \
+            --topic user-actions |
+            sed -n 's/.*PartitionCount: \([0-9][0-9]*\).*/\1/p' |
+            head -n 1)
+
+          if [ -z "$$PARTITIONS" ]; then
+            echo "ERROR: failed to determine partition count"
+            exit 1
+          fi
+
+          echo "Current partition count: $$PARTITIONS"
+
+          if [ "$$PARTITIONS" -lt 3 ]; then
+            echo "Increasing partitions to 3"
+
+            if ! /opt/kafka/bin/kafka-topics.sh \
+              --bootstrap-server kafka:29092 \
+              --alter \
+              --topic user-actions \
+              --partitions 3; then
+
+              echo "ERROR: failed to increase partitions"
+              exit 1
+            fi
+
+          elif [ "$$PARTITIONS" -gt 3 ]; then
+            echo "ERROR: user-actions has more than 3 partitions"
+            exit 1
+
+          else
+            echo "user-actions already has 3 partitions"
+          fi
+        fi
+
+        FINAL_PARTITIONS=$$(/opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:29092 \
+          --describe \
+          --topic user-actions |
+          sed -n 's/.*PartitionCount: \([0-9][0-9]*\).*/\1/p' |
+          head -n 1)
+
+        if [ -z "$$FINAL_PARTITIONS" ]; then
+          echo "ERROR: failed to determine final partition count"
+          exit 1
+        fi
+
+        echo "Final partition count: $$FINAL_PARTITIONS"
+
+        if [ "$$FINAL_PARTITIONS" -ne 3 ]; then
+          echo "ERROR: expected 3 partitions, got $$FINAL_PARTITIONS"
+          exit 1
+        fi
+
+        /opt/kafka/bin/kafka-topics.sh \
+          --bootstrap-server kafka:29092 \
+          --describe \
+          --topic user-actions
+
+volumes:
+  audit_postgres_data:
