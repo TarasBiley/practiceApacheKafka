@@ -22,9 +22,3 @@ type AuditResponse struct {
 	EventID   string    `json:"event_id"`
 	Timestamp time.Time `json:"timestamp"`
 }
-
-type AuditDeliveryError struct {
-	EventID   string    `json:"event_id"`
-	Timestamp time.Time `json:"timestamp"`
-	Error     string    `json:"error"`
-}

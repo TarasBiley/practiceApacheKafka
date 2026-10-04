@@ -2,7 +2,6 @@ package handler
 
 import (
 	"audit-service/internal/model"
-	"audit-service/internal/outbox"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,19 +15,17 @@ import (
 
 // AuditHandler godoc
 // @Summary Создать audit event
-// @Description Сохраняет событие и outbox в PostgreSQL; возвращает 201 только после подтверждения Kafka. При 503 событие сохранено и будет доставляться фоновым worker.
+// @Description Сохраняет audit event и outbox в PostgreSQL одной транзакцией. Доставка в Kafka выполняется асинхронно.
 // @Tags audit
 // @Accept json
 // @Produce json
 // @Param request body model.AuditRequest true "Audit event"
-// @Success 201 {object} model.AuditResponse
+// @Success 202 {object} model.AuditResponse
 // @Failure 400 {string} string
 // @Failure 500 {string} string
-// @Failure 503 {object} model.AuditDeliveryError
 // @Router /api/audit [post]
 func AuditHandler(
 	db *pgxpool.Pool,
-	publishTimeout time.Duration,
 ) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -189,24 +186,6 @@ func AuditHandler(
 			return
 		}
 
-		// The committed outbox row remains available for retries even if the
-		// request times out or the client disconnects while waiting for Kafka.
-		deliveryCtx, cancel := context.WithTimeout(r.Context(), publishTimeout)
-		defer cancel()
-		if err := outbox.WaitSent(deliveryCtx, db, outboxID); err != nil {
-			fmt.Println("audit delivery not confirmed:", eventID, err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			if err := json.NewEncoder(w).Encode(model.AuditDeliveryError{
-				EventID:   eventID,
-				Timestamp: timestamp,
-				Error:     "event saved; Kafka delivery is not confirmed yet; delivery will continue in the background",
-			}); err != nil {
-				fmt.Println("failed to encode delivery error:", err)
-			}
-			return
-		}
-
 		response := model.AuditResponse{
 			EventID:   eventID,
 			Timestamp: timestamp,
@@ -217,10 +196,9 @@ func AuditHandler(
 			"application/json",
 		)
 
-		w.WriteHeader(http.StatusCreated)
+		w.WriteHeader(http.StatusAccepted)
 
-		err = json.NewEncoder(w).Encode(response)
-		if err != nil {
+		if err := json.NewEncoder(w).Encode(response); err != nil {
 			fmt.Println("failed to encode response:", err)
 		}
 	}

@@ -36,3 +36,16 @@ CREATE TABLE analytics_events (
     kafka_partition INT NOT NULL,
     kafka_offset BIGINT NOT NULL
 );
+
+CREATE INDEX idx_audit_user_ts
+    ON audit_log (user_id, timestamp DESC);
+
+CREATE INDEX idx_outbox_pending
+    ON outbox (created_at, id)
+    WHERE status = 'pending';
+
+CREATE UNIQUE INDEX ux_stats_cache
+    ON stats_cache (action, period_start, period_end);
+
+CREATE INDEX idx_analytics_ts
+    ON analytics_events (timestamp);

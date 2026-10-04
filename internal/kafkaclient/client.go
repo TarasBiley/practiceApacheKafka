@@ -70,6 +70,7 @@ func NewWriter(
 		Topic:        topic,
 		Balancer:     &kafka.Hash{},
 		RequiredAcks: kafka.RequireAll,
+		BatchTimeout: 10 * time.Millisecond,
 	}
 }
 

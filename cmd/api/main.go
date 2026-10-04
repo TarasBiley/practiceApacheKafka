@@ -7,8 +7,12 @@ import (
 	"audit-service/internal/kafkaclient"
 	"audit-service/internal/outbox"
 	"context"
-	"fmt"
+	"errors"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	_ "audit-service/docs"
@@ -23,6 +27,13 @@ import (
 // @host localhost:8080
 // @BasePath /
 func main() {
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
 	cfg := config.Load()
 
 	kafkaWriter := kafkaclient.NewWriter(
@@ -30,6 +41,7 @@ func main() {
 		cfg.KafkaTopic,
 	)
 	defer kafkaWriter.Close()
+
 	kafkaReader := kafkaclient.NewReader(
 		cfg.KafkaBroker,
 		cfg.KafkaTopic,
@@ -37,8 +49,8 @@ func main() {
 		cfg.KafkaCommitInterval,
 		cfg.KafkaReadMaxBytes,
 	)
-
 	defer kafkaReader.Close()
+
 	db, err := pgxpool.New(
 		context.Background(),
 		cfg.DatabaseURL,
@@ -48,8 +60,7 @@ func main() {
 	}
 	defer db.Close()
 
-	err = db.Ping(context.Background())
-	if err != nil {
+	if err := db.Ping(context.Background()); err != nil {
 		panic(err)
 	}
 
@@ -67,9 +78,10 @@ func main() {
 		cfg.AnalyticsWindow,
 	)
 	defer stopAnalytics()
+
 	http.HandleFunc(
 		"POST /api/audit",
-		handler.AuditHandler(db, cfg.AuditPublishTimeout),
+		handler.AuditHandler(db),
 	)
 
 	http.HandleFunc(
@@ -96,10 +108,33 @@ func main() {
 		httpSwagger.WrapHandler,
 	)
 
-	fmt.Println("server started on :" + cfg.HTTPPort)
-
-	err = http.ListenAndServe(":"+cfg.HTTPPort, nil)
-	if err != nil {
-		panic(err)
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: http.DefaultServeMux,
 	}
+
+	go func() {
+		log.Println("server started on :" + cfg.HTTPPort)
+
+		if err := server.ListenAndServe(); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http server error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+
+	log.Println("shutdown signal received")
+
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown error: %v", err)
+	}
+
+	log.Println("server stopped")
 }

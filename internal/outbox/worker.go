@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
 )
@@ -35,116 +34,109 @@ func StartWorker(
 					return
 				}
 
-				tx, err := db.Begin(ctx)
-				if err != nil {
-					fmt.Println(
-						"outbox begin transaction error:",
-						err,
-					)
-					break
-				}
-
-				var (
-					id          string
-					aggregateID string
-					payload     []byte
-				)
-
-				err = tx.QueryRow(
+				rows, err := db.Query(
 					ctx,
 					`
 					SELECT
-						id,
+						id::text,
 						aggregate_id,
 						payload
 					FROM outbox
 					WHERE status = 'pending'
 					ORDER BY created_at
-					FOR UPDATE SKIP LOCKED
-					LIMIT 1
+					LIMIT 100
 					`,
-				).Scan(
-					&id,
-					&aggregateID,
-					&payload,
+				)
+				if err != nil {
+					fmt.Println("outbox select error:", err)
+					break
+				}
+
+				var (
+					ids      []string
+					messages []kafka.Message
 				)
 
-				// Pending событий больше нет.
-				if err == pgx.ErrNoRows {
-					rollback(tx)
-					break
-				}
-
-				if err != nil {
-					rollback(tx)
-
-					fmt.Println(
-						"outbox select error:",
-						err,
+				for rows.Next() {
+					var (
+						id          string
+						aggregateID string
+						payload     []byte
 					)
 
+					if err := rows.Scan(
+						&id,
+						&aggregateID,
+						&payload,
+					); err != nil {
+						fmt.Println("outbox scan error:", err)
+						continue
+					}
+
+					ids = append(ids, id)
+
+					messages = append(
+						messages,
+						kafka.Message{
+							Key:   []byte(aggregateID),
+							Value: payload,
+						},
+					)
+				}
+
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					fmt.Println("outbox rows error:", err)
 					break
 				}
 
-				// Строка всё ещё заблокирована этой транзакцией.
-				err = writer.WriteMessages(
+				rows.Close()
+
+				if len(messages) == 0 {
+					break
+				}
+
+				kafkaCtx, kafkaCancel := context.WithTimeout(
 					ctx,
-					kafka.Message{
-						Key:   []byte(aggregateID),
-						Value: payload,
-					},
+					5*time.Second,
 				)
 
+				err = writer.WriteMessages(
+					kafkaCtx,
+					messages...,
+				)
+
+				kafkaCancel()
+
 				if err != nil {
-					// Rollback снимает блокировку.
-					// status останется pending.
-					rollback(tx)
+					if ctx.Err() != nil {
+						return
+					}
 
-					fmt.Println(
-						"outbox kafka error:",
-						err,
-					)
-
+					fmt.Println("outbox kafka error:", err)
 					break
 				}
 
-				_, err = tx.Exec(
+				_, err = db.Exec(
 					ctx,
 					`
 					UPDATE outbox
 					SET
 						status = 'sent',
 						sent_at = NOW()
-					WHERE id = $1
+					WHERE id = ANY($1::uuid[])
 					`,
-					id,
+					ids,
 				)
 
 				if err != nil {
-					rollback(tx)
-
-					fmt.Println(
-						"outbox update error:",
-						err,
-					)
-
-					break
-				}
-
-				err = tx.Commit(ctx)
-				if err != nil {
-					rollback(tx)
-					fmt.Println(
-						"outbox commit error:",
-						err,
-					)
-
+					fmt.Println("outbox update error:", err)
 					break
 				}
 
 				fmt.Println(
-					"outbox sent:",
-					id,
+					"outbox batch sent:",
+					len(messages),
 				)
 			}
 		}
@@ -154,10 +146,4 @@ func StartWorker(
 		cancel()
 		<-done
 	}
-}
-
-func rollback(tx pgx.Tx) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = tx.Rollback(ctx)
 }

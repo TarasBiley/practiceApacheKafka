@@ -9,15 +9,6 @@ definitions:
       day:
         type: string
     type: object
-  model.AuditDeliveryError:
-    properties:
-      error:
-        type: string
-      event_id:
-        type: string
-      timestamp:
-        type: string
-    type: object
   model.AuditEvent:
     properties:
       action:
@@ -149,9 +140,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Сохраняет событие и outbox в PostgreSQL; возвращает 201 только
-        после подтверждения Kafka. При 503 событие сохранено и будет доставляться
-        фоновым worker.
+      description: Сохраняет audit event и outbox в PostgreSQL одной транзакцией.
+        Доставка в Kafka выполняется асинхронно.
       parameters:
       - description: Audit event
         in: body
@@ -162,8 +152,8 @@ paths:
       produces:
       - application/json
       responses:
-        "201":
-          description: Created
+        "202":
+          description: Accepted
           schema:
             $ref: '#/definitions/model.AuditResponse'
         "400":
@@ -174,10 +164,6 @@ paths:
           description: Internal Server Error
           schema:
             type: string
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/model.AuditDeliveryError'
       summary: Создать audit event
       tags:
       - audit

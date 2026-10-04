@@ -142,7 +142,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Сохраняет событие и outbox в PostgreSQL; возвращает 201 только после подтверждения Kafka. При 503 событие сохранено и будет доставляться фоновым worker.",
+                "description": "Сохраняет audit event и outbox в PostgreSQL одной транзакцией. Доставка в Kafka выполняется асинхронно.",
                 "consumes": [
                     "application/json"
                 ],
@@ -165,8 +165,8 @@ const docTemplate = `{
                     }
                 ],
                 "responses": {
-                    "201": {
-                        "description": "Created",
+                    "202": {
+                        "description": "Accepted",
                         "schema": {
                             "$ref": "#/definitions/model.AuditResponse"
                         }
@@ -181,12 +181,6 @@ const docTemplate = `{
                         "description": "Internal Server Error",
                         "schema": {
                             "type": "string"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/model.AuditDeliveryError"
                         }
                     }
                 }
@@ -255,20 +249,6 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "day": {
-                    "type": "string"
-                }
-            }
-        },
-        "model.AuditDeliveryError": {
-            "type": "object",
-            "properties": {
-                "error": {
-                    "type": "string"
-                },
-                "event_id": {
-                    "type": "string"
-                },
-                "timestamp": {
                     "type": "string"
                 }
             }
