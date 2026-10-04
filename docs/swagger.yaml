@@ -1,0 +1,205 @@
+basePath: /
+definitions:
+  handler.StatsItem:
+    properties:
+      action:
+        type: string
+      count:
+        type: integer
+      day:
+        type: string
+    type: object
+  model.AuditEvent:
+    properties:
+      action:
+        type: string
+      event_id:
+        type: string
+      meta:
+        additionalProperties: {}
+        type: object
+      resource_id:
+        type: string
+      timestamp:
+        type: string
+      user_id:
+        type: string
+    type: object
+  model.AuditRequest:
+    properties:
+      action:
+        type: string
+      meta:
+        additionalProperties: {}
+        type: object
+      resource_id:
+        type: string
+      user_id:
+        type: string
+    type: object
+  model.AuditResponse:
+    properties:
+      event_id:
+        type: string
+      timestamp:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: API для аудита действий пользователей.
+  title: Audit Service API
+  version: "1.0"
+paths:
+  /api/admin/rebuild-stats:
+    post:
+      description: Перечитывает историю Kafka за указанный период и пересчитывает
+        статистику
+      parameters:
+      - description: Дата начала YYYY-MM-DD
+        in: query
+        name: from
+        required: true
+        type: string
+      - description: Дата окончания YYYY-MM-DD
+        in: query
+        name: to
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: integer
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Пересчитать статистику
+      tags:
+      - admin
+  /api/audit:
+    get:
+      description: Возвращает события пользователя с фильтрацией и пагинацией
+      parameters:
+      - description: User ID
+        in: query
+        name: user_id
+        required: true
+        type: string
+      - description: 'Action: login, view, purchase'
+        in: query
+        name: action
+        type: string
+      - description: Дата начала YYYY-MM-DD
+        in: query
+        name: from
+        type: string
+      - description: Дата окончания YYYY-MM-DD
+        in: query
+        name: to
+        type: string
+      - default: 1
+        description: Номер страницы
+        in: query
+        name: page
+        type: integer
+      - default: 50
+        description: Количество элементов
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/model.AuditEvent'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Получить историю audit событий
+      tags:
+      - audit
+    post:
+      consumes:
+      - application/json
+      description: Сохраняет audit event и outbox в PostgreSQL одной транзакцией.
+        Доставка в Kafka выполняется асинхронно.
+      parameters:
+      - description: Audit event
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/model.AuditRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/model.AuditResponse'
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Создать audit event
+      tags:
+      - audit
+  /api/stats:
+    get:
+      description: Возвращает агрегированную статистику пользователя. При group_by=action
+        ответ содержит action и count. При group_by=day ответ содержит day и count.
+      parameters:
+      - description: User ID
+        in: query
+        name: user_id
+        required: true
+        type: string
+      - description: 'Группировка: action или day'
+        in: query
+        name: group_by
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/handler.StatsItem'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            type: string
+        "500":
+          description: Internal Server Error
+          schema:
+            type: string
+      summary: Получить статистику
+      tags:
+      - stats
+swagger: "2.0"
